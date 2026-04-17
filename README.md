@@ -121,8 +121,8 @@ Alerts broadcast automatically when:
 | Disk   | ≥ 85%   | —        |
 
 Trigger manually from Tinker:
-```php
-broadcast(new App\Events\AlertTriggered('cpu', 'Test alert!', 'warning'));
+```bash
+docker compose exec app php artisan tinker --execute="broadcast(new App\Events\AlertTriggered('cpu', 'Test alert!', 'warning'));"
 ```
 
 ---
