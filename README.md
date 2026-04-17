@@ -2,6 +2,8 @@
 
 A full-stack, real-time system dashboard built with **Laravel 11**, **Reverb**, **Redis**, and **Vue 3** (Composition API).
 
+![Dashboard Screenshot](public/screenshot.webp)
+
 ---
 
 ## Architecture at a Glance
