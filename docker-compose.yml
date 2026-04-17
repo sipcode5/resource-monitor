@@ -1,0 +1,177 @@
+services:
+    # ── MySQL ───────────────────────────────────────────────────────────────
+    mysql:
+        image: mysql:8.3
+        container_name: rm_mysql
+        restart: unless-stopped
+        environment:
+            MYSQL_DATABASE: resource_monitor
+            MYSQL_USER: laravel
+            MYSQL_PASSWORD: secret
+            MYSQL_ROOT_PASSWORD: root_secret
+        volumes:
+            - mysql_data:/var/lib/mysql
+        # Port not exposed to host — only reachable by containers on app_network.
+        # To connect from host tools use: docker compose exec mysql mysql -ularavel -psecret resource_monitor
+        healthcheck:
+            test:
+                [
+                    "CMD",
+                    "mysqladmin",
+                    "ping",
+                    "-h",
+                    "localhost",
+                    "-u",
+                    "laravel",
+                    "-psecret",
+                ]
+            interval: 10s
+            timeout: 5s
+            retries: 10
+        networks:
+            - app_network
+
+    # ── Redis ────────────────────────────────────────────────────────────────
+    redis:
+        image: redis:7-alpine
+        container_name: rm_redis
+        restart: unless-stopped
+        command: redis-server --save 20 1 --loglevel warning
+        volumes:
+            - redis_data:/data
+        ports:
+            - "6379:6379"
+        healthcheck:
+            test: ["CMD", "redis-cli", "ping"]
+            interval: 10s
+            timeout: 5s
+            retries: 10
+        networks:
+            - app_network
+
+    # ── PHP-FPM Application ──────────────────────────────────────────────────
+    app:
+        build:
+            context: .
+            dockerfile: Dockerfile
+            target: app
+        container_name: rm_app
+        restart: unless-stopped
+        env_file: .env
+        volumes:
+            - app_storage:/var/www/html/storage
+        depends_on:
+            mysql:
+                condition: service_healthy
+            redis:
+                condition: service_healthy
+        healthcheck:
+            # Probe php-fpm port 9000 directly – confirms it's actually listening
+            test: ["CMD-SHELL", "nc -z localhost 9000 || exit 1"]
+            interval: 10s
+            timeout: 5s
+            retries: 20
+            start_period: 90s
+        networks:
+            - app_network
+
+    # ── Nginx ────────────────────────────────────────────────────────────────
+    nginx:
+        build:
+            context: .
+            dockerfile: Dockerfile
+            target: nginx-stage
+        container_name: rm_nginx
+        restart: unless-stopped
+        ports:
+            - "8000:80"
+        volumes:
+            # storage symlink for user-uploaded files (read-only in nginx)
+            - app_storage:/var/www/html/storage:ro
+        depends_on:
+            app:
+                condition: service_healthy
+        networks:
+            - app_network
+
+    # ── Reverb WebSocket Server ───────────────────────────────────────────────
+    reverb:
+        build:
+            context: .
+            dockerfile: Dockerfile
+            target: app
+        container_name: rm_reverb
+        restart: unless-stopped
+        command: php artisan reverb:start --host=0.0.0.0 --port=8080 --no-interaction
+        env_file: .env
+        # No host port – browser reaches Reverb via Nginx proxy at /app
+        depends_on:
+            mysql:
+                condition: service_healthy
+            redis:
+                condition: service_healthy
+        networks:
+            - app_network
+
+    # ── Queue Worker ─────────────────────────────────────────────────────────
+    queue:
+        build:
+            context: .
+            dockerfile: Dockerfile
+            target: app
+        container_name: rm_queue
+        restart: unless-stopped
+        command: php artisan queue:work redis --sleep=3 --tries=3 --max-time=3600
+        env_file: .env
+        depends_on:
+            mysql:
+                condition: service_healthy
+            redis:
+                condition: service_healthy
+        networks:
+            - app_network
+
+    # ── Scheduler (replaces cron) ─────────────────────────────────────────────
+    scheduler:
+        build:
+            context: .
+            dockerfile: Dockerfile
+            target: app
+        container_name: rm_scheduler
+        restart: unless-stopped
+        command: >
+            sh -c "while true; do php artisan schedule:run --no-interaction && sleep 60; done"
+        env_file: .env
+        depends_on:
+            mysql:
+                condition: service_healthy
+            redis:
+                condition: service_healthy
+        networks:
+            - app_network
+
+    # ── Vite Dev Server (only used in local development) ─────────────────────
+    vite:
+        image: node:22-alpine
+        container_name: rm_vite
+        working_dir: /app
+        command: sh -c "npm ci && npm run dev"
+        volumes:
+            - .:/app
+            - node_modules:/app/node_modules
+        ports:
+            - "5173:5173"
+        networks:
+            - app_network
+        profiles:
+            - dev # Start with: docker compose --profile dev up
+
+volumes:
+    mysql_data:
+    redis_data:
+    app_storage:
+    node_modules:
+
+networks:
+    app_network:
+        driver: bridge
